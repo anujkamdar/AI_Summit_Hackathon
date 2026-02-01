@@ -84,3 +84,10 @@ class UserArtifactPack(BaseModel):
     bullet_bank: List[BulletEntry] = Field(default_factory=list)
     answer_library: AnswerLibrary
     proof_pack: List[ProofEntry] = Field(default_factory=list)
+
+class LaTeXResume(BaseModel):
+    latex_preamble: str = Field(..., description="The documentclass and required packages.")
+    contact_header: str = Field(..., description="LaTeX code for name and contact info.")
+    tailored_experience: List[str] = Field(..., description="List of LaTeX-formatted blocks for each job/project.")
+    skills_section: str = Field(..., description="LaTeX code for the skills section.")
+    full_latex_code: str = Field(..., description="The final, combined, compilable LaTeX string.")
