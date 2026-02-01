@@ -8,3 +8,8 @@ bcrypt>=4.0.0
 python-multipart==0.0.6
 pydantic[email]==2.5.3
 aiohttp==3.9.1
+agno>=0.1.0
+pymongo>=4.0.0
+sentence-transformers>=2.2.0
+torch>=2.0.0
+transformers>=4.30.0

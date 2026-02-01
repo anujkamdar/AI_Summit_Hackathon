@@ -3,12 +3,6 @@ from typing import List, Optional
 from datetime import datetime
 from enum import Enum
 
-
-class Job(BaseModel):
-    skill_fit: int
-    experience_fit: int
-
-
 class EvidenceStrength(str, Enum):
     high = "high"
     medium = "medium"

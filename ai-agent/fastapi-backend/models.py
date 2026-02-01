@@ -89,3 +89,73 @@ class StudentArtifact(BaseModel):
     artifact_data: dict  # The complete artifact from agent.py
     created_at: datetime
     updated_at: datetime
+
+
+# ============== JOB RANKING & QUEUE MODELS ==============
+
+class JobListing(BaseModel):
+    id: Optional[str] = None
+    title: str
+    company: str
+    location: str
+    type: str = "Full-time"
+    salary: Optional[str] = None
+    description: str
+    requiredSkills: List[str] = Field(default_factory=list)
+    visa_sponsorship: bool = False
+    createdAt: Optional[datetime] = None
+
+
+class RankedJob(BaseModel):
+    job_id: str
+    title: str
+    company: str
+    location: str
+    match_score: float = Field(..., ge=0, le=100, description="Relevance score 0-100")
+    matched_skills: List[str] = Field(default_factory=list)
+    description: str
+    salary: Optional[str] = None
+
+
+class RankingRequest(BaseModel):
+    max_results: int = Field(50, ge=1, le=100, description="Maximum jobs to rank")
+
+
+class RankingResponse(BaseModel):
+    user_email: EmailStr
+    ranked_jobs: List[RankedJob]
+    total_jobs: int
+    timestamp: datetime
+
+
+class JobQueueItem(BaseModel):
+    id: Optional[str] = None
+    user_email: EmailStr
+    job_id: str
+    job_title: str
+    company: str
+    match_score: float
+    status: JobStatus = JobStatus.IN_PROGRESS
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    cover_letter: Optional[str] = None  # For future auto-apply
+    error_message: Optional[str] = None
+
+
+class QueueStatusResponse(BaseModel):
+    user_email: EmailStr
+    total_in_queue: int
+    by_status: dict
+    jobs: List[JobQueueItem]
+
+
+class ApplyResponse(BaseModel):
+    """Response model for job application endpoint"""
+    queue_item_id: str
+    job_id: str
+    job_title: str
+    company: str
+    status: JobStatus
+    cover_letter: str
+    message: str
+    applied_at: datetime
