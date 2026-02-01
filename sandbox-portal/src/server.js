@@ -1,6 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import cors from 'cors';
 
 dotenv.config();
 
@@ -8,13 +9,14 @@ const app = express();
 const PORT = 4000;
 
 // Middleware
+app.use(cors());  // Enable CORS for all origins
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // MongoDB Connection
 const connectDB = async () => {
   try {
-    await mongoose.connect("mongodb+srv://anujkamdar2006_db_user:UlaKG5HA8btbBmvm@sandboxportal.gsimmxy.mongodb.net/sandboxportal");
+    await mongoose.connect("mongodb+srv://anujkamdar2006_db_user:UlaKG5HA8btbBmvm@sandboxportal.gsimmxy.mongodb.net/agno");
     console.log('✅ MongoDB Atlas connected successfully');
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);

@@ -20,7 +20,6 @@ except ImportError:
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
-
 @router.post("/signup", response_model=Token)
 async def signup(
     email: Annotated[str, Form()],
@@ -35,7 +34,6 @@ async def signup(
 ):
     """Register a new user with email, password, resume (required), and optional FAQ answers"""
     db = get_db()
-    
     # Check if user already exists
     existing_user = await db.users.find_one({"email": email})
     if existing_user:

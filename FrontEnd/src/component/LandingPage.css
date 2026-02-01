@@ -168,12 +168,15 @@
   border-radius: 20px;
   padding: 2.5rem;
   width: 90%;
-  max-width: 500px;
+  max-width: 900px;
   max-height: 90vh;
   overflow-y: auto;
   position: relative;
   animation: slideUp 0.3s ease;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5),
+              0 0 100px rgba(99, 102, 241, 0.2),
+              inset 0 0 80px rgba(99, 102, 241, 0.05);
+  backdrop-filter: blur(20px);
 }
 
 .modal-close {
@@ -197,6 +200,31 @@
 .modal-header {
   text-align: center;
   margin-bottom: 2rem;
+}
+
+.modal-form-container {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+.modal-form-container.signup-form {
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+}
+
+.form-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.form-section-title {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 1.125rem;
+  margin-bottom: 1.5rem;
+  font-weight: 600;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid rgba(99, 102, 241, 0.2);
 }
 
 .modal-header h2 {
@@ -281,9 +309,8 @@
 
 /* FAQ Section */
 .faq-section {
-  margin-top: 2rem;
-  padding-top: 2rem;
-  border-top: 1px solid rgba(99, 102, 241, 0.2);
+  margin-top: 0;
+  padding-top: 0;
 }
 
 .faq-section h3 {
@@ -438,9 +465,15 @@
 
   .modal-content {
     padding: 2rem;
+    max-width: 95%;
   }
   
   .content-overlay {
     min-height: calc(100vh - 150px);
+  }
+
+  .modal-form-container.signup-form {
+    grid-template-columns: 1fr;
+    gap: 0;
   }
 }

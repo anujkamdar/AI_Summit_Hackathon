@@ -273,7 +273,6 @@ Response:
 - MongoDB indexes recommended on:
   - users.email
   - student_artifacts.user_email
-
 ---
 
 **Status**: System architecture complete and documented

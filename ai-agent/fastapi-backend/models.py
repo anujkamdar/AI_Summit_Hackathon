@@ -7,10 +7,12 @@ from typing import List, Optional
 # ============== ENUMS ==============
 
 class JobStatus(str, Enum):
-    QUEUED = "QUEUED"
+    IN_PROGRESS = "IN_PROGRESS"
     APPLYING = "APPLYING"
     SUBMITTED = "SUBMITTED"
     FAILED = "FAILED"
+    RETRYING = "RETRYING"
+    SKIPPED = "SKIPPED"
 
 
 class LogType(str, Enum):
