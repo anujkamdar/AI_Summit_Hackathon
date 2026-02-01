@@ -9,6 +9,7 @@ from datetime import datetime
 import logging
 import asyncio
 import os
+import httpx
 from bson import ObjectId
 
 from models import JobStatus, RankedJob
@@ -29,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auto-apply", tags=["auto-apply"])
 
+# Sandbox Portal Configuration
+SANDBOX_PORTAL_URL = os.getenv("SANDBOX_PORTAL_URL", "http://localhost:4000")
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 1.0  # Base delay in seconds for exponential backoff
+
 # Initialize embedder (singleton pattern)
 _embedder = None
 
@@ -37,6 +43,103 @@ def get_embedder():
     if _embedder is None:
         _embedder = HuggingfaceCustomEmbedder("sentence-transformers/all-MiniLM-L6-v2")
     return _embedder
+
+
+# ============== SANDBOX PORTAL APPLY HELPER ==============
+
+async def apply_to_sandbox_portal(
+    job_id: str,
+    applicant_name: str,
+    applicant_email: str,
+    cover_letter: str,
+    match_score: float,
+    user_email: str
+) -> dict:
+    """
+    Submit application to sandbox portal with retry logic for chaos mode.
+    Returns the application receipt or raises an exception.
+    """
+    url = f"{SANDBOX_PORTAL_URL}/api/apply-job"
+    payload = {
+        "jobId": job_id,
+        "applicantName": applicant_name,
+        "applicantEmail": applicant_email,
+        "coverLetter": cover_letter,
+        "matchScore": match_score
+    }
+    
+    last_error = None
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, json=payload)
+                data = response.json()
+                
+                if response.status_code == 201 and data.get("success"):
+                    # Successfully submitted
+                    return {
+                        "success": True,
+                        "receipt": data.get("receipt"),
+                        "attempts": attempt + 1
+                    }
+                
+                # Check if it's a duplicate application (not retryable)
+                if response.status_code == 409:
+                    return {
+                        "success": True,
+                        "duplicate": True,
+                        "applicationId": data.get("applicationId"),
+                        "attempts": attempt + 1
+                    }
+                
+                # Check if error is retryable (chaos mode)
+                is_chaos = data.get("chaos", False)
+                is_retryable = data.get("retryable", False)
+                
+                if is_chaos or is_retryable:
+                    retry_after = data.get("retryAfter", RETRY_BASE_DELAY)
+                    
+                    await manager.send_personal_message(
+                        create_log_message("warning", f"⚠️ Chaos mode triggered ({data.get('error', 'Unknown error')}). Retry {attempt + 1}/{MAX_RETRIES} in {retry_after}s..."),
+                        user_email
+                    )
+                    
+                    # Exponential backoff with jitter
+                    delay = retry_after * (2 ** attempt) + (asyncio.get_event_loop().time() % 1)
+                    await asyncio.sleep(min(delay, 10))  # Cap at 10 seconds
+                    last_error = data.get("error", "Retryable error")
+                    continue
+                
+                # Non-retryable error
+                return {
+                    "success": False,
+                    "error": data.get("error", f"HTTP {response.status_code}"),
+                    "attempts": attempt + 1
+                }
+                
+        except httpx.TimeoutException:
+            last_error = "Request timeout"
+            await manager.send_personal_message(
+                create_log_message("warning", f"⚠️ Timeout. Retry {attempt + 1}/{MAX_RETRIES}..."),
+                user_email
+            )
+            await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+            
+        except httpx.RequestError as e:
+            last_error = f"Connection error: {str(e)}"
+            await manager.send_personal_message(
+                create_log_message("warning", f"⚠️ Connection error. Retry {attempt + 1}/{MAX_RETRIES}..."),
+                user_email
+            )
+            await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+    
+    # All retries exhausted
+    return {
+        "success": False,
+        "error": f"Max retries exceeded: {last_error}",
+        "attempts": MAX_RETRIES
+    }
 
 
 # ============== AUTO-APPLY WORKFLOW ==============
@@ -353,7 +456,42 @@ async def run_auto_apply_workflow(
                 # Generate cover letter
                 cover_letter = Application_agent(job_listing, student_artifact)
                 
-                # Update to SUBMITTED
+                # Get applicant name from artifact
+                applicant_name = "Unknown Applicant"
+                if "student_profile" in student_artifact:
+                    profile = student_artifact["student_profile"]
+                    applicant_name = profile.get("full_name", profile.get("name", "Unknown Applicant"))
+                
+                await manager.send_personal_message(
+                    create_log_message("info", f"📤 Submitting application to sandbox portal..."),
+                    user_email
+                )
+                
+                # Submit to sandbox portal with retry logic
+                sandbox_result = await apply_to_sandbox_portal(
+                    job_id=job_id,
+                    applicant_name=applicant_name,
+                    applicant_email=user_email,
+                    cover_letter=cover_letter,
+                    match_score=item.get("match_score", 0),
+                    user_email=user_email
+                )
+                
+                if not sandbox_result.get("success"):
+                    raise Exception(f"Sandbox portal error: {sandbox_result.get('error', 'Unknown error')}")
+                
+                # Check if it was a duplicate
+                if sandbox_result.get("duplicate"):
+                    await manager.send_personal_message(
+                        create_log_message("info", f"ℹ️ Already applied to: {item['title']} @ {item['company']}"),
+                        user_email
+                    )
+                
+                # Get application receipt
+                receipt = sandbox_result.get("receipt", {})
+                sandbox_application_id = receipt.get("applicationId") or sandbox_result.get("applicationId")
+                
+                # Update to SUBMITTED with sandbox reference
                 applied_at = datetime.utcnow()
                 await db.job_queue.update_one(
                     {"_id": ObjectId(queue_item_id)},
@@ -361,7 +499,9 @@ async def run_auto_apply_workflow(
                         "status": JobStatus.SUBMITTED.value,
                         "cover_letter": cover_letter,
                         "updated_at": applied_at,
-                        "error_message": None
+                        "error_message": None,
+                        "sandbox_application_id": str(sandbox_application_id) if sandbox_application_id else None,
+                        "retry_attempts": sandbox_result.get("attempts", 1)
                     }}
                 )
                 
@@ -370,7 +510,9 @@ async def run_auto_apply_workflow(
                     "job_id": job_id,
                     "title": item["title"],
                     "company": item["company"],
-                    "cover_letter_preview": cover_letter[:200] + "..." if len(cover_letter) > 200 else cover_letter
+                    "cover_letter_preview": cover_letter[:200] + "..." if len(cover_letter) > 200 else cover_letter,
+                    "sandbox_application_id": str(sandbox_application_id) if sandbox_application_id else None,
+                    "retry_attempts": sandbox_result.get("attempts", 1)
                 })
                 
                 await manager.send_personal_message(
@@ -379,12 +521,15 @@ async def run_auto_apply_workflow(
                         "job_id": job_id,
                         "title": item["title"],
                         "company": item["company"],
-                        "status": "SUBMITTED"
+                        "status": "SUBMITTED",
+                        "sandbox_application_id": str(sandbox_application_id) if sandbox_application_id else None
                     }, "applied"),
                     user_email
                 )
+                
+                retry_info = f" (retries: {sandbox_result.get('attempts', 1) - 1})" if sandbox_result.get("attempts", 1) > 1 else ""
                 await manager.send_personal_message(
-                    create_log_message("success", f"✅ Successfully applied to: {item['title']} @ {item['company']}"),
+                    create_log_message("success", f"✅ Successfully applied to: {item['title']} @ {item['company']}{retry_info}"),
                     user_email
                 )
                 

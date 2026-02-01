@@ -45,27 +45,65 @@ const Job = mongoose.model('Job', jobSchema);
 const applicationSchema = new mongoose.Schema({
   jobId: { type: mongoose.Schema.Types.ObjectId, ref: 'Job', required: true },
   applicantName: { type: String, required: true },
+  applicantEmail: { type: String, default: '' },
   resumeText: { type: String, required: true },
   coverLetter: { type: String, required: true },
+  matchScore: { type: Number, default: 0 },
   status: { type: String, default: 'pending' }, // pending, reviewed, accepted, rejected
+  source: { type: String, default: 'manual' }, // manual, auto-apply-agent
   timestamp: { type: Date, default: Date.now }
 });
 
 const Application = mongoose.model('Application', applicationSchema);
 
 // ==================== CHAOS MODE HELPER ====================
+let chaosConfig = {
+  enabled: true,
+  failureRate: 0.2  // 20% failure rate
+};
+
 const chaosMode = () => {
-  // 20% random failure rate
-  if (Math.random() < 0.2) {
+  if (!chaosConfig.enabled) return null;
+  
+  if (Math.random() < chaosConfig.failureRate) {
     const errors = [
-      { status: 500, message: 'Internal Server Error - Service temporarily unavailable' },
-      { status: 429, message: 'Too Many Requests - Rate limit exceeded' },
-      { status: 503, message: 'Service Unavailable - Database connection lost' }
+      { status: 500, message: 'Internal Server Error - Service temporarily unavailable', retryable: true },
+      { status: 429, message: 'Too Many Requests - Rate limit exceeded', retryable: true },
+      { status: 503, message: 'Service Unavailable - Database connection lost', retryable: true },
+      { status: 502, message: 'Bad Gateway - Upstream server error', retryable: true }
     ];
     return errors[Math.floor(Math.random() * errors.length)];
   }
   return null;
 };
+
+// ==================== CHAOS MODE CONFIG ENDPOINTS ====================
+
+// GET /api/chaos - Get current chaos mode config
+app.get('/api/chaos', (req, res) => {
+  res.json({
+    success: true,
+    config: chaosConfig
+  });
+});
+
+// POST /api/chaos - Update chaos mode config
+app.post('/api/chaos', (req, res) => {
+  const { enabled, failureRate } = req.body;
+  
+  if (typeof enabled === 'boolean') {
+    chaosConfig.enabled = enabled;
+  }
+  if (typeof failureRate === 'number' && failureRate >= 0 && failureRate <= 1) {
+    chaosConfig.failureRate = failureRate;
+  }
+  
+  res.json({
+    success: true,
+    message: 'Chaos mode config updated',
+    config: chaosConfig
+  });
+});
 
 // ==================== API ENDPOINTS ====================
 
@@ -87,28 +125,30 @@ app.get('/api/jobs', async (req, res) => {
   }
 });
 
-// POST /api/apply - Submit job application with CHAOS MODE
-app.post('/api/apply', async (req, res) => {
+// POST /api/apply-job - Submit job application with CHAOS MODE and retry info (for auto-apply agent)
+app.post('/api/apply-job', async (req, res) => {
   try {
-    // CHAOS MODE: 20% random failure
+    // CHAOS MODE: Random failure based on config
     const chaos = chaosMode();
     if (chaos) {
       return res.status(chaos.status).json({
         success: false,
         error: chaos.message,
         chaos: true,
-        retryAfter: Math.floor(Math.random() * 5) + 1 // Suggest retry after 1-5 seconds
+        retryable: chaos.retryable,
+        retryAfter: Math.floor(Math.random() * 3) + 1 // Suggest retry after 1-3 seconds
       });
     }
 
-    const { jobId, applicantName, resumeText, coverLetter } = req.body;
+    const { jobId, applicantName, applicantEmail, resumeText, coverLetter, matchScore } = req.body;
 
     // Validation
-    if (!jobId || !applicantName || !resumeText || !coverLetter) {
+    if (!jobId || !applicantName || !coverLetter) {
       return res.status(400).json({
         success: false,
         error: 'Missing required fields',
-        required: ['jobId', 'applicantName', 'resumeText', 'coverLetter']
+        required: ['jobId', 'applicantName', 'coverLetter'],
+        optional: ['applicantEmail', 'resumeText', 'matchScore']
       });
     }
 
@@ -117,7 +157,23 @@ app.post('/api/apply', async (req, res) => {
     if (!job) {
       return res.status(404).json({
         success: false,
-        error: 'Job not found'
+        error: 'Job not found',
+        retryable: false
+      });
+    }
+
+    // Check for duplicate application
+    const existingApplication = await Application.findOne({ 
+      jobId, 
+      applicantName 
+    });
+    
+    if (existingApplication) {
+      return res.status(409).json({
+        success: false,
+        error: 'Duplicate application - already applied to this job',
+        applicationId: existingApplication._id,
+        retryable: false
       });
     }
 
@@ -125,9 +181,12 @@ app.post('/api/apply', async (req, res) => {
     const application = new Application({
       jobId,
       applicantName,
-      resumeText,
+      applicantEmail: applicantEmail || '',
+      resumeText: resumeText || 'Resume provided via auto-apply agent',
       coverLetter,
-      status: 'pending'
+      matchScore: matchScore || 0,
+      status: 'pending',
+      source: 'auto-apply-agent'
     });
 
     await application.save();
@@ -138,23 +197,77 @@ app.post('/api/apply', async (req, res) => {
       message: 'Application submitted successfully',
       receipt: {
         applicationId: application._id,
+        jobId: jobId,
         jobTitle: job.title,
         company: job.company,
         applicantName: application.applicantName,
         submittedAt: application.timestamp,
-        status: application.status
+        status: application.status,
+        matchScore: matchScore
       }
     });
   } catch (error) {
     res.status(500).json({
       success: false,
       error: 'Failed to submit application',
+      message: error.message,
+      retryable: true
+    });
+  }
+});
+
+// GET /api/applied-jobs - Get all applied jobs with full details
+app.get('/api/applied-jobs', async (req, res) => {
+  try {
+    const { applicantName, applicantEmail, status } = req.query;
+    
+    // Build filter
+    const filter = {};
+    if (applicantName) filter.applicantName = applicantName;
+    if (applicantEmail) filter.applicantEmail = applicantEmail;
+    if (status) filter.status = status;
+    
+    const applications = await Application.find(filter)
+      .populate('jobId', 'title company location type salary requiredSkills visa_sponsorship description')
+      .sort({ timestamp: -1 });
+    
+    // Format response with full job details
+    const appliedJobs = applications.map(app => ({
+      applicationId: app._id,
+      appliedAt: app.timestamp,
+      status: app.status,
+      applicantName: app.applicantName,
+      applicantEmail: app.applicantEmail,
+      coverLetterPreview: app.coverLetter ? app.coverLetter.substring(0, 200) + '...' : '',
+      matchScore: app.matchScore || 0,
+      source: app.source || 'manual',
+      job: app.jobId ? {
+        jobId: app.jobId._id,
+        title: app.jobId.title,
+        company: app.jobId.company,
+        location: app.jobId.location,
+        type: app.jobId.type,
+        salary: app.jobId.salary,
+        requiredSkills: app.jobId.requiredSkills,
+        visa_sponsorship: app.jobId.visa_sponsorship
+      } : null
+    }));
+    
+    res.json({
+      success: true,
+      count: appliedJobs.length,
+      data: appliedJobs
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch applied jobs',
       message: error.message
     });
   }
 });
 
-// GET /api/applications - Return all applications
+// GET /api/applications - Return all applications (legacy endpoint)
 app.get('/api/applications', async (req, res) => {
   try {
     const applications = await Application.find()
@@ -489,7 +602,7 @@ app.get('/', async (req, res) => {
     `}
 
     <div class="footer">
-      <p>🎯 Sandbox Job Portal API | Chaos Mode: 20% Random Failures Enabled</p>
+      <p>🎯 Sandbox Job Portal API | Chaos Mode: ${chaosConfig.enabled ? `${chaosConfig.failureRate * 100}% Random Failures Enabled` : 'Disabled'}</p>
       <p>Built for Hackathon - AI Agent Testing Environment</p>
     </div>
   </div>
@@ -525,12 +638,15 @@ const startServer = async () => {
     console.log(`📍 Port: ${PORT}`);
     console.log(`🌐 Frontend: http://localhost:${PORT}`);
     console.log(`🔌 API: http://localhost:${PORT}/api/jobs`);
-    console.log(`⚠️  CHAOS MODE: Enabled (20% failure rate)`);
+    console.log(`⚠️  CHAOS MODE: ${chaosConfig.enabled ? 'Enabled' : 'Disabled'} (${chaosConfig.failureRate * 100}% failure rate)`);
     console.log(`\n📝 API Endpoints:`);
     console.log(`   GET  /              - Frontend view`);
     console.log(`   GET  /api/jobs      - List all jobs`);
-    console.log(`   POST /api/apply     - Submit application (with chaos)`);
-    console.log(`   GET  /api/applications - View all applications`);
+    console.log(`   POST /api/apply-job - Submit application (with chaos + retry)`);
+    console.log(`   GET  /api/applied-jobs - View all applied jobs with details`);
+    console.log(`   GET  /api/applications - View all applications (legacy)`);
+    console.log(`   GET  /api/chaos     - Get chaos mode config`);
+    console.log(`   POST /api/chaos     - Update chaos mode config`);
     console.log(`   POST /seed          - Seed 50 dummy jobs`);
     console.log(`   GET  /health        - Health check\n`);
   });
