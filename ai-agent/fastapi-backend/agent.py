@@ -127,14 +127,12 @@ Return output strictly in the required structured format.
 """
     response = agent_Artifact.run(USER_PROMPT)
     logger.info("Received response from agent...")
-    return response
+    return response.content.model_dump(mode='json')
 
 def Ranking_agent(mdb_connection_string):
     pass
 
 
 Mongo=r"mongodb+srv://anujkamdar2006_db_user:UlaKG5HA8btbBmvm@sandboxportal.gsimmxy.mongodb.net/sandboxportal"
-Resume_link= r"C:\Users\joset\Desktop\I_can_do_this_all_day\Helem_Thekkumvilayil_Jose_CV_pdf.pdf"
 
-print(Generate_artifact(Resume_link).to_json())
 

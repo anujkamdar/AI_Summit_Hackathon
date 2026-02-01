@@ -45,12 +45,19 @@ class User(BaseModel):
     id: str
     email: EmailStr
     resume: Optional[str] = None  # Base64 encoded resume or file path
+    artifact_id: Optional[str] = None  # Reference to student artifact
     created_at: datetime
 
 
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6)
+    work_authorization: Optional[str] = None
+    location_preference: Optional[str] = None
+    remote_preference: Optional[str] = None
+    start_date: Optional[str] = None
+    relocation: Optional[str] = None
+    salary_expectation: Optional[str] = None
 
 
 class UserLogin(BaseModel):
@@ -71,3 +78,12 @@ class UserMetrics(BaseModel):
     failed_jobs: int
     success_rate: str
     recent_jobs: List[dict]
+
+
+# ============== STUDENT ARTIFACT MODELS ==============
+
+class StudentArtifact(BaseModel):
+    user_email: EmailStr
+    artifact_data: dict  # The complete artifact from agent.py
+    created_at: datetime
+    updated_at: datetime

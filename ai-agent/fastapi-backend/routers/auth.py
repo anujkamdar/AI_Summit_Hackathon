@@ -2,9 +2,21 @@ from fastapi import APIRouter, HTTPException, status, File, UploadFile, Form
 from typing import Optional, Annotated
 from datetime import datetime
 import base64
+import os
+import sys
+import json
+import tempfile
 from models import Token, UserLogin
 from auth import verify_password, get_password_hash, create_access_token
 from database import get_db
+
+# Add parent directory to path to import agent module
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+try:
+    from agent import Generate_artifact
+except ImportError:
+    Generate_artifact = None
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -13,9 +25,15 @@ router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 async def signup(
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
-    resume: Optional[UploadFile] = File(None)
+    resume: UploadFile = File(...),
+    work_authorization: Optional[str] = Form(None),
+    location_preference: Optional[str] = Form(None),
+    remote_preference: Optional[str] = Form(None),
+    start_date: Optional[str] = Form(None),
+    relocation: Optional[str] = Form(None),
+    salary_expectation: Optional[str] = Form(None)
 ):
-    """Register a new user with email, password, and optional resume"""
+    """Register a new user with email, password, resume (required), and optional FAQ answers"""
     db = get_db()
     
     # Check if user already exists
@@ -33,18 +51,78 @@ async def signup(
             detail="Password must be at least 6 characters long"
         )
     
-    # Process resume if provided
-    resume_data = None
-    if resume:
-        # Read and encode resume as base64
-        resume_content = await resume.read()
-        resume_data = base64.b64encode(resume_content).decode('utf-8')
+    # Validate resume is provided
+    if not resume:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Resume is required for signup"
+        )
     
-    # Create user
+    # Process resume
+    resume_content = await resume.read()
+    resume_base64 = base64.b64encode(resume_content).decode('utf-8')
+    
+    # Save resume temporarily for agent processing
+    artifact_data = None
+    artifact_id = None
+    
+    try:
+        # Create temp file with proper extension
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            temp_file.write(resume_content)
+            temp_pdf_path = temp_file.name
+        
+        # Generate artifact using agent if available
+        if Generate_artifact:
+            try:
+                artifact_json = Generate_artifact(temp_pdf_path)
+                artifact_dict = json.loads(artifact_json) if isinstance(artifact_json, str) else artifact_json
+                
+                # Store artifact in separate collection
+                artifact_doc = {
+                    "user_email": email,
+                    "artifact_data": artifact_dict,
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+                artifact_result = await db.student_artifacts.insert_one(artifact_doc)
+                artifact_id = str(artifact_result.inserted_id)
+                artifact_data = artifact_dict
+                
+            except Exception as e:
+                # Log error but continue with signup
+                await db.logs.insert_one({
+                    "time": datetime.utcnow(),
+                    "type": "error",
+                    "msg": f"Failed to generate artifact for {email}: {str(e)}",
+                    "user_email": email
+                })
+        
+    finally:
+        # Clean up temp file
+        if 'temp_pdf_path' in locals():
+            try:
+                os.unlink(temp_pdf_path)
+            except:
+                pass
+    
+    # Collect FAQ answers
+    faq_answers = {
+        "work_authorization": work_authorization,
+        "location_preference": location_preference,
+        "remote_preference": remote_preference,
+        "start_date": start_date,
+        "relocation": relocation,
+        "salary_expectation": salary_expectation
+    }
+    
+    # Create user with FAQ answers and artifact reference
     user_data = {
         "email": email,
         "password": get_password_hash(password),
-        "resume": resume_data,
+        "resume": resume_base64,
+        "artifact_id": artifact_id,
+        "faq_answers": faq_answers,
         "created_at": datetime.utcnow()
     }
     
@@ -58,7 +136,7 @@ async def signup(
     await db.logs.insert_one({
         "time": datetime.utcnow(),
         "type": "success",
-        "msg": f"New user registered: {email}",
+        "msg": f"New user registered: {email}" + (" with artifact" if artifact_id else ""),
         "user_email": email
     })
     
@@ -68,6 +146,8 @@ async def signup(
         "user": {
             "id": user_id,
             "email": email,
+            "artifact_id": artifact_id,
+            "has_artifact": artifact_id is not None,
             "created_at": user_data["created_at"].isoformat()
         }
     }
@@ -112,4 +192,26 @@ async def signin(user_login: UserLogin):
             "email": user["email"],
             "created_at": user["created_at"].isoformat()
         }
+    }
+
+
+@router.get("/artifact/{user_email}")
+async def get_student_artifact(user_email: str):
+    """Retrieve the student artifact for a given user email"""
+    db = get_db()   
+    
+    # Find the artifact
+    artifact = await db.student_artifacts.find_one({"user_email": user_email})
+    
+    if not artifact:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No artifact found for this user"
+        )
+    
+    return {
+        "user_email": artifact["user_email"],
+        "artifact": artifact["artifact_data"],
+        "created_at": artifact["created_at"].isoformat(),
+        "updated_at": artifact["updated_at"].isoformat()
     }
