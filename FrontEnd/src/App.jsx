@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, AlertOctagon, Activity, FileText, CheckCircle, XCircle, Clock, Terminal } from 'lucide-react';
+import { Play, Pause, AlertOctagon, Activity, FileText, CheckCircle, XCircle, Clock, Terminal, LogOut } from 'lucide-react';
+import LandingPage from './component/LandingPage';
 
 // --- MOCK DATA (Replace with API calls later) ---
 const INITIAL_JOBS = [
@@ -19,10 +20,39 @@ const INITIAL_LOGS = [
 
 export default function App() {
   // State
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [userData, setUserData] = useState(null);
   const [jobs, setJobs] = useState(INITIAL_JOBS);
   const [logs, setLogs] = useState(INITIAL_LOGS);
   const [isRunning, setIsRunning] = useState(true); // The "Kill Switch" state
   const [stats, setStats] = useState({ total: 30, applied: 12, successRate: '92%' });
+  
+  // Check for existing authentication on mount
+  useEffect(() => {
+    const token = localStorage.getItem('access_token');
+    const email = localStorage.getItem('user_email');
+    if (token && email) {
+      setIsAuthenticated(true);
+      setUserData({ email });
+    }
+  }, []);
+
+  const handleLogin = (data) => {
+    setIsAuthenticated(true);
+    setUserData(data.user);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('user_email');
+    setIsAuthenticated(false);
+    setUserData(null);
+  };
+
+  // Show landing page if not authenticated
+  if (!isAuthenticated) {
+    return <LandingPage onLogin={handleLogin} />;
+  }
   
   const logsEndRef = useRef(null);
 
@@ -59,7 +89,7 @@ export default function App() {
           <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
             AutoApply Agent <span className="text-xs bg-slate-800 text-slate-400 px-2 py-1 rounded ml-2">v1.0.0</span>
           </h1>
-          <p className="text-slate-500 mt-1 text-sm">Autonomous Search & Application Pipeline</p>
+          <p className="text-slate-500 mt-1 text-sm">Autonomous Search & Application Pipeline {userData?.email && `• ${userData.email}`}</p>
         </div>
 
         <div className="flex items-center gap-4">
@@ -78,6 +108,14 @@ export default function App() {
             }`}
           >
             {isRunning ? <><Pause size={18} /> EMERGENCY STOP</> : <><Play size={18} /> RESUME AGENT</>}
+          </button>
+
+          {/* LOGOUT BUTTON */}
+          <button 
+            onClick={handleLogout}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition-all bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-300 border border-slate-700"
+          >
+            <LogOut size={18} /> Logout
           </button>
         </div>
       </header>
